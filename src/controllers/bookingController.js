@@ -7,12 +7,28 @@ import { emitToUser } from "../utils/socket.js";
 export async function createBooking(req, res) {
   try {
     const {
-      containerType, containerSize, quantity,
-      origin, destination, pickupDate,
-      cargoType, weight, additionalNotes,
+      // Shipper / Consignee / Notify Party
+      shipperName, shipperCompany, shipperEmail, consignee, notifyParty,
+      // Route & Vessel
+      preCarriageBy, placeOfReceipt, portOfLoading, portOfDischarge,
+      oceanVesselVoyNo, placeOfDelivery, pickupDate,
+      // Container & Cargo
+      containerType, containerSize, quantity, containerNo, sealNo,
+      marksAndNos, noOfPkgs, kindOfPkgs, descriptionOfGoods,
+      grossWeight, measurement, totalContainersWords,
+      // Charges & Issue Details
+      revenueTons, rate, per, prepaid, collect, remarks,
+      placeOfIssue, dateOfIssue, numberOfOriginalBL, additionalNotes,
+      // Legacy fields (kept for backward compatibility, not required anymore)
+      origin, destination, cargoType, weight,
     } = req.body;
 
-    if (!containerType || !containerSize || !origin || !destination || !pickupDate) {
+    if (
+      !shipperName || !shipperCompany || !shipperEmail || !consignee ||
+      !placeOfReceipt || !portOfLoading || !portOfDischarge || !placeOfDelivery || !pickupDate ||
+      !containerType || !containerSize || !noOfPkgs || !kindOfPkgs || !descriptionOfGoods || !grossWeight ||
+      !placeOfIssue
+    ) {
       return res.status(400).json({ error: "Please fill in the required information" });
     }
 
@@ -26,15 +42,55 @@ export async function createBooking(req, res) {
       userName: user.name,
       userEmail: user.email,
       companyName: user.companyName || "",
+
+      // Shipper / Consignee / Notify Party
+      shipperName,
+      shipperCompany,
+      shipperEmail,
+      consignee,
+      notifyParty: notifyParty || "",
+
+      // Route & Vessel
+      preCarriageBy: preCarriageBy || "",
+      placeOfReceipt,
+      portOfLoading,
+      portOfDischarge,
+      oceanVesselVoyNo: oceanVesselVoyNo || "",
+      placeOfDelivery,
+      pickupDate,
+
+      // Container & Cargo
       containerType,
       containerSize,
       quantity: quantity || 1,
-      origin,
-      destination,
-      pickupDate,
-      cargoType: cargoType || "",
-      weight: weight || "",
+      containerNo: containerNo || "",
+      sealNo: sealNo || "",
+      marksAndNos: marksAndNos || "",
+      noOfPkgs,
+      kindOfPkgs,
+      descriptionOfGoods,
+      grossWeight,
+      measurement: measurement || "",
+      totalContainersWords: totalContainersWords || "",
+
+      // Charges & Issue Details
+      revenueTons: revenueTons || "",
+      rate: rate || "",
+      per: per || "",
+      prepaid: prepaid || "",
+      collect: collect || "",
+      remarks: remarks || "",
+      placeOfIssue,
+      dateOfIssue: dateOfIssue || "",
+      numberOfOriginalBL: numberOfOriginalBL || "",
       additionalNotes: additionalNotes || "",
+
+      // Legacy fields (kept so older dashboards/exports don't break)
+      origin: origin || placeOfReceipt || "",
+      destination: destination || placeOfDelivery || "",
+      cargoType: cargoType || "",
+      weight: weight || grossWeight || "",
+
       status: "pending",
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -154,8 +210,20 @@ export async function updateBooking(req, res) {
   try {
     const { id } = req.params;
     const allowedFields = [
-      "containerType", "containerSize", "quantity", "origin", "destination",
-      "pickupDate", "cargoType", "weight", "additionalNotes",
+      // Shipper / Consignee / Notify Party
+      "shipperName", "shipperCompany", "shipperEmail", "consignee", "notifyParty",
+      // Route & Vessel
+      "preCarriageBy", "placeOfReceipt", "portOfLoading", "portOfDischarge",
+      "oceanVesselVoyNo", "placeOfDelivery", "pickupDate",
+      // Container & Cargo
+      "containerType", "containerSize", "quantity", "containerNo", "sealNo",
+      "marksAndNos", "noOfPkgs", "kindOfPkgs", "descriptionOfGoods",
+      "grossWeight", "measurement", "totalContainersWords",
+      // Charges & Issue Details
+      "revenueTons", "rate", "per", "prepaid", "collect", "remarks",
+      "placeOfIssue", "dateOfIssue", "numberOfOriginalBL", "additionalNotes",
+      // Legacy fields
+      "origin", "destination", "cargoType", "weight",
     ];
     const updates = {};
     for (const field of allowedFields) {
@@ -240,9 +308,22 @@ export async function downloadInvoice(req, res) {
         .text(label, x + 3, y + h / 2 - 4, { width: w - 6, align: "center" });
     }
 
+    // ---------- resolved fields (fallback to legacy data for old bookings) ----------
+    const shipperName = booking.shipperName || booking.userName;
+    const shipperCompany = booking.shipperCompany || booking.companyName || "";
+    const shipperEmail = booking.shipperEmail || booking.userEmail;
+    const consignee = booking.consignee || "To order / As advised by Shipper";
+    const notifyParty = booking.notifyParty || "Same as Consignee";
+    const preCarriageBy = booking.preCarriageBy || "N/A";
+    const placeOfReceipt = booking.placeOfReceipt || booking.origin || "N/A";
+    const portOfLoading = booking.portOfLoading || booking.origin || "N/A";
+    const portOfDischarge = booking.portOfDischarge || booking.destination || "N/A";
+    const oceanVesselVoyNo = booking.oceanVesselVoyNo || "N/A";
+    const placeOfDelivery = booking.placeOfDelivery || booking.destination || "N/A";
+
     // ---------- Header ----------
     let y = 30;
-    box(M, y, 310, 90, "Shipper", `${booking.userName}\n${booking.companyName || ""}\n${booking.userEmail}`);
+    box(M, y, 310, 90, "Shipper", `${shipperName}\n${shipperCompany}\n${shipperEmail}`);
 
     doc
       .fontSize(20)
@@ -269,22 +350,22 @@ export async function downloadInvoice(req, res) {
       });
 
     y += 90;
-    box(M, y, W, 60, "Consignee", "To order / As advised by Shipper");
+    box(M, y, W, 60, "Consignee", consignee);
 
     y += 60;
-    box(M, y, W, 60, "Notify Party", "Same as Consignee");
+    box(M, y, W, 60, "Notify Party", notifyParty);
 
     y += 60;
-    box(M, y, 257, 40, "Pre-carriage by", "N/A");
-    box(M + 257, y, 258, 40, "Place of Receipt", booking.origin);
+    box(M, y, 257, 40, "Pre-carriage by", preCarriageBy);
+    box(M + 257, y, 258, 40, "Place of Receipt", placeOfReceipt);
 
     y += 40;
-    box(M, y, 257, 40, "Port of Loading", booking.origin, { bold: true });
-    box(M + 257, y, 258, 40, "Port of Discharge", booking.destination, { bold: true });
+    box(M, y, 257, 40, "Port of Loading", portOfLoading, { bold: true });
+    box(M + 257, y, 258, 40, "Port of Discharge", portOfDischarge, { bold: true });
 
     y += 40;
-    box(M, y, 257, 40, "Ocean Vessel / Voy No.", "N/A");
-    box(M + 257, y, 258, 40, "Place of Delivery", booking.destination);
+    box(M, y, 257, 40, "Ocean Vessel / Voy No.", oceanVesselVoyNo);
+    box(M + 257, y, 258, 40, "Place of Delivery", placeOfDelivery);
 
     // ---------- Container table ----------
     y += 50;
@@ -308,14 +389,14 @@ export async function downloadInvoice(req, res) {
     y += 22;
     const rowH = 130;
     const values = [
-      id.slice(-8).toUpperCase(),
-      "N/A",
-      booking.companyName || "-",
-      String(booking.quantity),
-      `${booking.containerType} / ${booking.containerSize}`,
-      booking.cargoType || "General Cargo",
-      booking.weight || "N/A",
-      "N/A",
+      booking.containerNo || id.slice(-8).toUpperCase(),
+      booking.sealNo || "N/A",
+      booking.marksAndNos || booking.companyName || "-",
+      booking.noOfPkgs || String(booking.quantity),
+      booking.kindOfPkgs || `${booking.containerType} / ${booking.containerSize}`,
+      booking.descriptionOfGoods || booking.cargoType || "General Cargo",
+      booking.grossWeight || booking.weight || "N/A",
+      booking.measurement || "N/A",
     ];
     cx = M;
     cols.forEach((c, i) => {
@@ -330,29 +411,32 @@ export async function downloadInvoice(req, res) {
 
     // ---------- Total containers / notes ----------
     y += rowH;
+    const totalWordsFallback = `${booking.quantity} (${booking.quantity === 1 ? "ONE" : "MULTIPLE"}) CONTAINER(S) SAID TO CONTAIN ${(
+      booking.descriptionOfGoods || booking.cargoType || "GENERAL CARGO"
+    ).toUpperCase()}`;
     box(
       M,
       y,
       W,
       35,
       "Total No. of Containers / Packages (in words)",
-      `${booking.quantity} (${booking.quantity === 1 ? "ONE" : "MULTIPLE"}) CONTAINER(S) SAID TO CONTAIN ${(
-        booking.cargoType || "GENERAL CARGO"
-      ).toUpperCase()}`
+      booking.totalContainersWords || totalWordsFallback
     );
-    if (booking.additionalNotes) {
+
+    const remarksText = booking.remarks || booking.additionalNotes;
+    if (remarksText) {
       y += 35;
-      box(M, y, W, 30, "Remarks", booking.additionalNotes);
+      box(M, y, W, 30, "Remarks", remarksText);
     }
 
     // ---------- Freight & Charges ----------
-    y += booking.additionalNotes ? 30 : 35;
+    y += remarksText ? 30 : 35;
     const freightCols = [
-      { label: "Revenue Tons", w: 103 },
-      { label: "Rate", w: 103 },
-      { label: "Per", w: 103 },
-      { label: "Prepaid", w: 103 },
-      { label: "Collect", w: 103 },
+      { label: "Revenue Tons", w: 103, value: booking.revenueTons },
+      { label: "Rate", w: 103, value: booking.rate },
+      { label: "Per", w: 103, value: booking.per },
+      { label: "Prepaid", w: 103, value: booking.prepaid },
+      { label: "Collect", w: 103, value: booking.collect },
     ];
     cx = M;
     freightCols.forEach((c) => {
@@ -360,14 +444,30 @@ export async function downloadInvoice(req, res) {
       doc
         .fontSize(6.5)
         .font("Helvetica-Bold")
+        .fillColor("#000")
         .text(c.label.toUpperCase(), cx + 4, y + 4, { width: c.w - 8 });
+      doc
+        .fontSize(8)
+        .font("Helvetica")
+        .fillColor("#000")
+        .text(c.value || "", cx + 4, y + 18, { width: c.w - 8 });
       cx += c.w;
     });
 
     // ---------- Footer ----------
     y += 55;
-    box(M, y, 170, 80, "Place & Date of Issue", `Dhaka, Bangladesh\n${new Date(booking.createdAt).toLocaleDateString()}`);
-    box(M + 170, y, 175, 80, "Number of Original B(s)/L", "3 (THREE)");
+    const issueDate = booking.dateOfIssue
+      ? new Date(booking.dateOfIssue).toLocaleDateString()
+      : new Date(booking.createdAt).toLocaleDateString();
+    box(
+      M,
+      y,
+      170,
+      80,
+      "Place & Date of Issue",
+      `${booking.placeOfIssue || "Dhaka, Bangladesh"}\n${issueDate}`
+    );
+    box(M + 170, y, 175, 80, "Number of Original B(s)/L", booking.numberOfOriginalBL || "3 (THREE)");
     box(
       M + 345,
       y,
