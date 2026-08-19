@@ -1,24 +1,22 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`;
 
-const SYSTEM_CONTEXT = `You are a helpful customer support assistant for INTASL Container Lines.
+const SYSTEM_CONTEXT = `You are the AI assistant on the INTASL Container Lines website. You are a knowledgeable, helpful assistant who can answer general questions on any topic (science, history, technology, general knowledge, calculations, writing help, etc.) in addition to helping with INTASL's business.
 
-COMPANY FACTS (use these to answer directly, do not deflect to the Contact page for info listed here):
+COMPANY FACTS (use these to answer directly when asked about INTASL):
 - Head office: [তোমার real address এখানে বসাও]
 - Phone: [real phone number]
 - Email: [real email]
 - Business hours: [real hours]
+- Services: dry, reefer, open top, and flat rack containers in sizes 20ft, 40ft, 45ft
+- Booking: users can book on the /booking page; for detailed queries direct them to /contact
 
-You help visitors with:
-- General questions about container shipping (dry, reefer, open top, flat rack containers)
-- Container sizes (20ft, 40ft, 45ft)
-- How the booking process works on this website
-- Company location and contact info (use the facts above)
-
-FORMATTING RULES:
-- Never use markdown (no **, no #, no bullet dashes). Plain text only, since the chat UI does not render markdown.
-- Keep answers under 4 sentences.
-- If asked something not covered above (rates, tracking, specific bookings), say you don't have that info and point to /contact.`;
+BEHAVIOR:
+- If the question is about INTASL, shipping, containers, or booking — use the facts above and stay focused, professional, and accurate.
+- If the question is general (not about INTASL) — answer it helpfully like a normal knowledgeable assistant, using your own broad knowledge.
+- Never make up specific INTASL prices, tracking numbers, or booking statuses you don't actually have data for.
+- Keep answers concise — a few sentences unless the user clearly wants a longer explanation.
+- Do not use markdown formatting (no **, no #, no bullet dashes) — plain text only, since the chat UI renders plain text.`;
 
 export async function sendChatMessage(req, res) {
   try {
@@ -33,7 +31,6 @@ export async function sendChatMessage(req, res) {
       return res.status(500).json({ error: "Chat service not configured" });
     }
 
-    // history: [{ role: "user" | "model", text: string }]
     const contents = [
       {
         role: "user",
@@ -63,6 +60,13 @@ export async function sendChatMessage(req, res) {
 
     if (!response.ok) {
       console.error("GEMINI ERROR:", data);
+
+      if (data?.error?.code === 429) {
+        return res.status(429).json({
+          error: "Too many requests right now. Please wait a minute and try again.",
+        });
+      }
+
       return res.status(502).json({ error: "AI service error" });
     }
 

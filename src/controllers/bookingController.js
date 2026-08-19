@@ -1,4 +1,5 @@
 import { ObjectId } from "mongodb";
+import PDFDocument from "pdfkit";
 import { getDB } from "../config/db.js";
 import { createNotification } from "./notificationController.js";
 import { emitToUser } from "../utils/socket.js";
@@ -61,7 +62,6 @@ export async function createBooking(req, res) {
       )
     );
 
-    // 🔔 রিয়েল-টাইম নোটিফিকেশন — সব admin কে
     admins.forEach((admin) => {
       emitToUser(admin._id.toString(), "notification", {
         type: "booking_created",
@@ -135,7 +135,6 @@ export async function updateBookingStatus(req, res) {
       bookingId: id,
     });
 
-    // 🔔 রিয়েল-টাইম নোটিফিকেশন — booking এর owner কে
     emitToUser(booking.userId, "notification", {
       type: `booking_${status}`,
       message: messageMap[status],
@@ -185,5 +184,76 @@ export async function deleteBooking(req, res) {
   } catch (err) {
     console.error("DELETE BOOKING ERROR:", err);
     return res.status(500).json({ error: "Server Error" });
+  }
+}
+
+// 🆕 Invoice PDF — শুধু accepted booking-এর জন্য কাজ করবে
+export async function downloadInvoice(req, res) {
+  try {
+    const { id } = req.params;
+    const db = getDB();
+    const booking = await db.collection("bookings").findOne({ _id: new ObjectId(id) });
+
+    if (!booking) {
+      return res.status(404).json({ error: "Booking not found" });
+    }
+
+    // owner নিজে অথবা admin — এর বাইরে কেউ access পাবে না
+    const requester = await db.collection("users").findOne({ _id: new ObjectId(req.user.userId) });
+    const isOwner = booking.userId === req.user.userId;
+    if (!isOwner && !requester?.isAdmin) {
+      return res.status(403).json({ error: "Not authorized to access this invoice" });
+    }
+
+    if (booking.status !== "accepted") {
+      return res.status(400).json({ error: "Invoice is only available after your booking is accepted" });
+    }
+
+    const doc = new PDFDocument({ margin: 50 });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=invoice-${id}.pdf`);
+    doc.pipe(res);
+
+    doc.fontSize(20).text("INTASL Container Lines", { align: "left" });
+    doc.fontSize(10).text("Booking Invoice", { align: "left" });
+    doc.moveDown(1.5);
+
+    doc.fontSize(11).text(`Invoice #: ${id}`);
+    doc.text(`Booking Date: ${new Date(booking.createdAt).toLocaleDateString()}`);
+    doc.text(`Status: ${booking.status.toUpperCase()}`);
+    doc.moveDown();
+
+    doc.fontSize(12).text("Customer", { underline: true });
+    doc.moveDown(0.3);
+    doc.fontSize(11).text(`Name: ${booking.userName}`);
+    doc.text(`Email: ${booking.userEmail}`);
+    if (booking.companyName) doc.text(`Company: ${booking.companyName}`);
+    doc.moveDown();
+
+    doc.fontSize(12).text("Shipment Details", { underline: true });
+    doc.moveDown(0.3);
+    doc.fontSize(11).text(`Container Type: ${booking.containerType}`);
+    doc.text(`Container Size: ${booking.containerSize}`);
+    doc.text(`Quantity: ${booking.quantity}`);
+    doc.text(`Origin: ${booking.origin}`);
+    doc.text(`Destination: ${booking.destination}`);
+    doc.text(`Pickup Date: ${booking.pickupDate}`);
+    if (booking.cargoType) doc.text(`Cargo Type: ${booking.cargoType}`);
+    if (booking.weight) doc.text(`Weight: ${booking.weight}`);
+    if (booking.additionalNotes) {
+      doc.moveDown(0.5);
+      doc.text(`Notes: ${booking.additionalNotes}`);
+    }
+
+    doc.moveDown(1.5);
+    doc.fontSize(9).fillColor("gray").text(
+      "This is a system-generated invoice confirming your accepted booking. For pricing and payment details, please contact our team.",
+      { align: "left" }
+    );
+
+    doc.end();
+  } catch (err) {
+    console.error("INVOICE ERROR:", err);
+    res.status(500).json({ error: "Failed to generate invoice" });
   }
 }
