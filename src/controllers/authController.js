@@ -3,8 +3,6 @@ import { ObjectId } from "mongodb";
 import crypto from "crypto";
 import { getDB } from "../config/db.js";
 import { signToken, verifyToken } from "../utils/jwt.js";
-import { sendOTPEmail } from "../utils/mailer.js";
-import { generateOTP, hashOTP, compareOTP } from "../utils/otp.js";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -13,41 +11,6 @@ const COOKIE_OPTIONS = {
   maxAge: 60 * 60 * 24 * 7 * 1000,
   path: "/",
 };
-
-const DEVICE_COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  maxAge: 60 * 60 * 24 * 30 * 1000,
-  path: "/",
-};
-
-const OTP_EXPIRY_MS = 5 * 60 * 1000;
-
-async function createAndSendOtp(db, userId, email, name) {
-  const otp = generateOTP();
-  const otpHash = await hashOTP(otp);
-
-  await db.collection("users").updateOne(
-    { _id: userId },
-    {
-      $set: {
-        otp: {
-          hash: otpHash,
-          expiresAt: new Date(Date.now() + OTP_EXPIRY_MS),
-          attempts: 0,
-        },
-      },
-    }
-  );
-
-  try {
-    await sendOTPEmail(email, otp, name);
-  } catch (mailErr) {
-    console.error("SEND OTP EMAIL FAILED:", mailErr.message);
-    throw new Error("Failed to send verification email. Check SMTP settings.");
-  }
-}
 
 // ---------- REGISTER ----------
 export async function registerUser(req, res) {
@@ -91,23 +54,28 @@ export async function registerUser(req, res) {
 
     const userId = result.insertedId;
 
-    // ---- OTP পাঠাও email verify করার জন্য ----
-    try {
-      await createAndSendOtp(db, userId, normalizedEmail, name);
-    } catch (mailErr) {
-      // account তৈরি হয়ে গেছে কিন্তু email পাঠাতে ব্যর্থ — user কে জানাও
-      return res.status(500).json({ error: mailErr.message });
-    }
-
-    const preAuthToken = await signToken(
-      { userId: userId.toString(), stage: "otp-pending" },
-      "10m"
-    );
+    const token = await signToken({
+      userId: userId.toString(),
+      email: normalizedEmail,
+      name,
+    });
+    res.cookie("token", token, COOKIE_OPTIONS);
 
     return res.status(201).json({
-      requireOTP: true,
-      preAuthToken,
-      email: normalizedEmail,
+      token,
+      user: {
+        id: userId.toString(),
+        name,
+        email: normalizedEmail,
+        companyName: companyName || "",
+        role: role || "",
+        yearsExperience: yearsExperience || "",
+        businessType: businessType || "",
+        shippingMethod: shippingMethod || "",
+        notificationPref: notificationPref || "",
+        newsletter: Boolean(newsletter),
+        isAdmin: false,
+      },
     });
   } catch (error) {
     console.error("REGISTER ERROR:", error);
@@ -135,111 +103,13 @@ export async function loginUser(req, res) {
     }
 
     const userId = user._id.toString();
-
-    const deviceId = req.cookies?.deviceId;
-    const isTrustedDevice =
-      deviceId &&
-      user.trustedDevices?.some(
-        (d) => d.deviceId === deviceId && new Date(d.expiresAt) > new Date()
-      );
-
-    if (isTrustedDevice) {
-      const token = await signToken({ userId, email: user.email, name: user.name });
-      res.cookie("token", token, COOKIE_OPTIONS);
-      return res.json({
-        token,
-        user: {
-          id: userId, name: user.name, email: user.email,
-          companyName: user.companyName, role: user.role,
-          yearsExperience: user.yearsExperience, businessType: user.businessType,
-          shippingMethod: user.shippingMethod, notificationPref: user.notificationPref,
-          newsletter: user.newsletter,
-          isAdmin: Boolean(user.isAdmin),
-        },
-      });
-    }
-
-    try {
-      await createAndSendOtp(db, user._id, user.email, user.name);
-    } catch (mailErr) {
-      return res.status(500).json({ error: mailErr.message });
-    }
-
-    const preAuthToken = await signToken({ userId, stage: "otp-pending" }, "10m");
-
-    return res.json({
-      requireOTP: true,
-      preAuthToken,
-      email: user.email,
-    });
-  } catch (error) {
-    console.error("LOGIN ERROR:", error);
-    return res.status(500).json({ error: "Server Error" });
-  }
-}
-
-// ---------- VERIFY OTP (login ও register দুটোর জন্যই কাজ করে) ----------
-export async function verifyOTP(req, res) {
-  try {
-    const { preAuthToken, otp } = req.body;
-    if (!preAuthToken || !otp) {
-      return res.status(400).json({ error: "Missing token or OTP" });
-    }
-
-    let payload;
-    try {
-      payload = await verifyToken(preAuthToken);
-    } catch {
-      return res.status(401).json({ error: "Session expired, please try again" });
-    }
-
-    if (payload.stage !== "otp-pending") {
-      return res.status(400).json({ error: "Invalid verification session" });
-    }
-
-    const db = getDB();
-    const user = await db.collection("users").findOne({ _id: new ObjectId(payload.userId) });
-
-    if (!user?.otp) {
-      return res.status(400).json({ error: "No OTP request found, please try again" });
-    }
-    if (new Date(user.otp.expiresAt) < new Date()) {
-      return res.status(400).json({ error: "OTP expired, please try again" });
-    }
-    if (user.otp.attempts >= 5) {
-      return res.status(429).json({ error: "Too many attempts, please try again" });
-    }
-
-    const isValid = await compareOTP(otp, user.otp.hash);
-    if (!isValid) {
-      await db.collection("users").updateOne(
-        { _id: user._id },
-        { $inc: { "otp.attempts": 1 } }
-      );
-      return res.status(401).json({ error: "Invalid OTP" });
-    }
-
-    const deviceId = crypto.randomUUID();
-    const deviceExpiresAt = new Date(Date.now() + 60 * 60 * 24 * 30 * 1000);
-
-    await db.collection("users").updateOne(
-      { _id: user._id },
-      {
-        $unset: { otp: "" },
-        $push: {
-          trustedDevices: { deviceId, expiresAt: deviceExpiresAt, addedAt: new Date() },
-        },
-      }
-    );
-
-    const token = await signToken({ userId: user._id.toString(), email: user.email, name: user.name });
+    const token = await signToken({ userId, email: user.email, name: user.name });
     res.cookie("token", token, COOKIE_OPTIONS);
-    res.cookie("deviceId", deviceId, DEVICE_COOKIE_OPTIONS);
 
     return res.json({
       token,
       user: {
-        id: user._id.toString(), name: user.name, email: user.email,
+        id: userId, name: user.name, email: user.email,
         companyName: user.companyName, role: user.role,
         yearsExperience: user.yearsExperience, businessType: user.businessType,
         shippingMethod: user.shippingMethod, notificationPref: user.notificationPref,
@@ -248,39 +118,7 @@ export async function verifyOTP(req, res) {
       },
     });
   } catch (error) {
-    console.error("VERIFY OTP ERROR:", error);
-    return res.status(500).json({ error: "Server Error" });
-  }
-}
-
-// ---------- RESEND OTP ----------
-export async function resendOTP(req, res) {
-  try {
-    const { preAuthToken } = req.body;
-    if (!preAuthToken) {
-      return res.status(400).json({ error: "Missing token" });
-    }
-
-    let payload;
-    try {
-      payload = await verifyToken(preAuthToken);
-    } catch {
-      return res.status(401).json({ error: "Session expired, please try again" });
-    }
-
-    const db = getDB();
-    const user = await db.collection("users").findOne({ _id: new ObjectId(payload.userId) });
-    if (!user) return res.status(404).json({ error: "User not found" });
-
-    try {
-      await createAndSendOtp(db, user._id, user.email, user.name);
-    } catch (mailErr) {
-      return res.status(500).json({ error: mailErr.message });
-    }
-
-    return res.json({ message: "OTP resent" });
-  } catch (error) {
-    console.error("RESEND OTP ERROR:", error);
+    console.error("LOGIN ERROR:", error);
     return res.status(500).json({ error: "Server Error" });
   }
 }
@@ -305,7 +143,7 @@ export async function getMe(req, res) {
     const db = getDB();
     const user = await db.collection("users").findOne(
       { _id: new ObjectId(payload.userId) },
-      { projection: { password: 0, otp: 0 } }
+      { projection: { password: 0 } }
     );
     if (!user) return res.json(null);
 
