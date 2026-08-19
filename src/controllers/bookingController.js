@@ -187,7 +187,7 @@ export async function deleteBooking(req, res) {
   }
 }
 
-// 🆕 Invoice PDF — শুধু accepted booking-এর জন্য কাজ করবে
+// 🆕 Bill of Lading style Invoice PDF — শুধু accepted booking-এর জন্য
 export async function downloadInvoice(req, res) {
   try {
     const { id } = req.params;
@@ -198,7 +198,6 @@ export async function downloadInvoice(req, res) {
       return res.status(404).json({ error: "Booking not found" });
     }
 
-    // owner নিজে অথবা admin — এর বাইরে কেউ access পাবে না
     const requester = await db.collection("users").findOne({ _id: new ObjectId(req.user.userId) });
     const isOwner = booking.userId === req.user.userId;
     if (!isOwner && !requester?.isAdmin) {
@@ -209,46 +208,174 @@ export async function downloadInvoice(req, res) {
       return res.status(400).json({ error: "Invoice is only available after your booking is accepted" });
     }
 
-    const doc = new PDFDocument({ margin: 50 });
+    const doc = new PDFDocument({ size: "A4", margin: 0 });
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=invoice-${id}.pdf`);
+    res.setHeader("Content-Disposition", `attachment; filename=BL-${id}.pdf`);
     doc.pipe(res);
 
-    doc.fontSize(20).text("INTASL Container Lines", { align: "left" });
-    doc.fontSize(10).text("Booking Invoice", { align: "left" });
-    doc.moveDown(1.5);
+    // ---------- helpers ----------
+    const M = 40; // left/right margin
+    const W = 515; // usable width (595 - 40*2)
 
-    doc.fontSize(11).text(`Invoice #: ${id}`);
-    doc.text(`Booking Date: ${new Date(booking.createdAt).toLocaleDateString()}`);
-    doc.text(`Status: ${booking.status.toUpperCase()}`);
-    doc.moveDown();
-
-    doc.fontSize(12).text("Customer", { underline: true });
-    doc.moveDown(0.3);
-    doc.fontSize(11).text(`Name: ${booking.userName}`);
-    doc.text(`Email: ${booking.userEmail}`);
-    if (booking.companyName) doc.text(`Company: ${booking.companyName}`);
-    doc.moveDown();
-
-    doc.fontSize(12).text("Shipment Details", { underline: true });
-    doc.moveDown(0.3);
-    doc.fontSize(11).text(`Container Type: ${booking.containerType}`);
-    doc.text(`Container Size: ${booking.containerSize}`);
-    doc.text(`Quantity: ${booking.quantity}`);
-    doc.text(`Origin: ${booking.origin}`);
-    doc.text(`Destination: ${booking.destination}`);
-    doc.text(`Pickup Date: ${booking.pickupDate}`);
-    if (booking.cargoType) doc.text(`Cargo Type: ${booking.cargoType}`);
-    if (booking.weight) doc.text(`Weight: ${booking.weight}`);
-    if (booking.additionalNotes) {
-      doc.moveDown(0.5);
-      doc.text(`Notes: ${booking.additionalNotes}`);
+    function box(x, y, w, h, label, value, opts = {}) {
+      doc.rect(x, y, w, h).lineWidth(0.7).strokeColor("#333").stroke();
+      doc
+        .fontSize(6.5)
+        .fillColor("#666")
+        .font("Helvetica")
+        .text(label.toUpperCase(), x + 5, y + 4, { width: w - 10 });
+      doc
+        .fontSize(opts.fontSize || 9)
+        .fillColor("#000")
+        .font(opts.bold ? "Helvetica-Bold" : "Helvetica")
+        .text(value || "", x + 5, y + 15, { width: w - 10, height: h - 20 });
     }
 
-    doc.moveDown(1.5);
-    doc.fontSize(9).fillColor("gray").text(
-      "This is a system-generated invoice confirming your accepted booking. For pricing and payment details, please contact our team.",
-      { align: "left" }
+    function colHeader(x, y, w, h, label) {
+      doc.rect(x, y, w, h).lineWidth(0.7).strokeColor("#333").stroke();
+      doc
+        .fontSize(6.5)
+        .font("Helvetica-Bold")
+        .fillColor("#000")
+        .text(label, x + 3, y + h / 2 - 4, { width: w - 6, align: "center" });
+    }
+
+    // ---------- Header ----------
+    let y = 30;
+    box(M, y, 310, 90, "Shipper", `${booking.userName}\n${booking.companyName || ""}\n${booking.userEmail}`);
+
+    doc
+      .fontSize(20)
+      .font("Helvetica-Bold")
+      .fillColor("#0B5B52")
+      .text("INTASL", M + 330, y + 8, { width: 175, align: "right" });
+    doc
+      .fontSize(11)
+      .font("Helvetica")
+      .fillColor("#333")
+      .text("Logistics Ltd.", M + 330, y + 30, { width: 175, align: "right" });
+    doc
+      .fontSize(13)
+      .font("Helvetica-Bold")
+      .fillColor("#000")
+      .text("BILL OF LADING", M + 330, y + 50, { width: 175, align: "right" });
+    doc
+      .fontSize(7)
+      .font("Helvetica")
+      .fillColor("#555")
+      .text("for Multimodal Transport or Ocean Transport", M + 330, y + 68, {
+        width: 175,
+        align: "right",
+      });
+
+    y += 90;
+    box(M, y, W, 60, "Consignee", "To order / As advised by Shipper");
+
+    y += 60;
+    box(M, y, W, 60, "Notify Party", "Same as Consignee");
+
+    y += 60;
+    box(M, y, 257, 40, "Pre-carriage by", "N/A");
+    box(M + 257, y, 258, 40, "Place of Receipt", booking.origin);
+
+    y += 40;
+    box(M, y, 257, 40, "Port of Loading", booking.origin, { bold: true });
+    box(M + 257, y, 258, 40, "Port of Discharge", booking.destination, { bold: true });
+
+    y += 40;
+    box(M, y, 257, 40, "Ocean Vessel / Voy No.", "N/A");
+    box(M + 257, y, 258, 40, "Place of Delivery", booking.destination);
+
+    // ---------- Container table ----------
+    y += 50;
+    const cols = [
+      { label: "Container No.", w: 70 },
+      { label: "Seal No.", w: 50 },
+      { label: "Marks & Nos.", w: 65 },
+      { label: "No. of Pkgs", w: 45 },
+      { label: "Kind of Pkgs", w: 65 },
+      { label: "Description of Goods", w: 120 },
+      { label: "Gross Weight", w: 50 },
+      { label: "Measurement", w: 50 },
+    ];
+    let cx = M;
+    cols.forEach((c) => {
+      colHeader(cx, y, c.w, 22, c.label);
+      cx += c.w;
+    });
+
+    // data row
+    y += 22;
+    const rowH = 130;
+    const values = [
+      id.slice(-8).toUpperCase(),
+      "N/A",
+      booking.companyName || "-",
+      String(booking.quantity),
+      `${booking.containerType} / ${booking.containerSize}`,
+      booking.cargoType || "General Cargo",
+      booking.weight || "N/A",
+      "N/A",
+    ];
+    cx = M;
+    cols.forEach((c, i) => {
+      doc.rect(cx, y, c.w, rowH).lineWidth(0.7).strokeColor("#333").stroke();
+      doc
+        .fontSize(8)
+        .font("Helvetica")
+        .fillColor("#000")
+        .text(values[i], cx + 3, y + 6, { width: c.w - 6 });
+      cx += c.w;
+    });
+
+    // ---------- Total containers / notes ----------
+    y += rowH;
+    box(
+      M,
+      y,
+      W,
+      35,
+      "Total No. of Containers / Packages (in words)",
+      `${booking.quantity} (${booking.quantity === 1 ? "ONE" : "MULTIPLE"}) CONTAINER(S) SAID TO CONTAIN ${(
+        booking.cargoType || "GENERAL CARGO"
+      ).toUpperCase()}`
+    );
+    if (booking.additionalNotes) {
+      y += 35;
+      box(M, y, W, 30, "Remarks", booking.additionalNotes);
+    }
+
+    // ---------- Freight & Charges ----------
+    y += booking.additionalNotes ? 30 : 35;
+    const freightCols = [
+      { label: "Revenue Tons", w: 103 },
+      { label: "Rate", w: 103 },
+      { label: "Per", w: 103 },
+      { label: "Prepaid", w: 103 },
+      { label: "Collect", w: 103 },
+    ];
+    cx = M;
+    freightCols.forEach((c) => {
+      doc.rect(cx, y, c.w, 40).lineWidth(0.7).strokeColor("#333").stroke();
+      doc
+        .fontSize(6.5)
+        .font("Helvetica-Bold")
+        .text(c.label.toUpperCase(), cx + 4, y + 4, { width: c.w - 8 });
+      cx += c.w;
+    });
+
+    // ---------- Footer ----------
+    y += 55;
+    box(M, y, 170, 80, "Place & Date of Issue", `Dhaka, Bangladesh\n${new Date(booking.createdAt).toLocaleDateString()}`);
+    box(M + 170, y, 175, 80, "Number of Original B(s)/L", "3 (THREE)");
+    box(
+      M + 345,
+      y,
+      170,
+      80,
+      "Signed on behalf of the Carrier",
+      "\n\nINTASL Container Lines\nAs Carrier",
+      { fontSize: 8 }
     );
 
     doc.end();
