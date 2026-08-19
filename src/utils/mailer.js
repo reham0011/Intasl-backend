@@ -6,6 +6,9 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_APP_PASSWORD,
   },
+  connectionTimeout: 10000, // 10s এর মধ্যে connect না হলে fail
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
 });
 
 export async function sendOTPEmail(toEmail, otp, userName = "") {
@@ -13,7 +16,7 @@ export async function sendOTPEmail(toEmail, otp, userName = "") {
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px;">
       <h2 style="color: #0f172a;">Login Verification Code</h2>
       <p>Hi ${userName || "there"},</p>
-      <p>Use the following code to verify this login. This code expires in <b>5 minutes</b>.</p>
+      <p>Use the following code to verify. This code expires in <b>5 minutes</b>.</p>
       <div style="font-size: 32px; font-weight: bold; letter-spacing: 6px; background: #f1f5f9; padding: 16px; text-align: center; border-radius: 6px; margin: 16px 0;">
         ${otp}
       </div>
@@ -24,7 +27,7 @@ export async function sendOTPEmail(toEmail, otp, userName = "") {
   await transporter.sendMail({
     from: `"INTASL" <${process.env.SMTP_USER}>`,
     to: toEmail,
-    subject: `Your login code: ${otp}`,
+    subject: `Your verification code: ${otp}`,
     html,
   });
 }

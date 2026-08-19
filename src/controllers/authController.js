@@ -18,13 +18,38 @@ const DEVICE_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: true,
   sameSite: "none",
-  maxAge: 60 * 60 * 24 * 30 * 1000, // 30 days
+  maxAge: 60 * 60 * 24 * 30 * 1000,
   path: "/",
 };
 
-const OTP_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
 
-// ---------- REGISTER (অপরিবর্তিত) ----------
+async function createAndSendOtp(db, userId, email, name) {
+  const otp = generateOTP();
+  const otpHash = await hashOTP(otp);
+
+  await db.collection("users").updateOne(
+    { _id: userId },
+    {
+      $set: {
+        otp: {
+          hash: otpHash,
+          expiresAt: new Date(Date.now() + OTP_EXPIRY_MS),
+          attempts: 0,
+        },
+      },
+    }
+  );
+
+  try {
+    await sendOTPEmail(email, otp, name);
+  } catch (mailErr) {
+    console.error("SEND OTP EMAIL FAILED:", mailErr.message);
+    throw new Error("Failed to send verification email. Check SMTP settings.");
+  }
+}
+
+// ---------- REGISTER ----------
 export async function registerUser(req, res) {
   try {
     const {
@@ -64,22 +89,25 @@ export async function registerUser(req, res) {
       createdAt: new Date(),
     });
 
-    const userId = result.insertedId.toString();
-    const token = await signToken({ userId, email: normalizedEmail, name });
+    const userId = result.insertedId;
 
-    res.cookie("token", token, COOKIE_OPTIONS);
+    // ---- OTP পাঠাও email verify করার জন্য ----
+    try {
+      await createAndSendOtp(db, userId, normalizedEmail, name);
+    } catch (mailErr) {
+      // account তৈরি হয়ে গেছে কিন্তু email পাঠাতে ব্যর্থ — user কে জানাও
+      return res.status(500).json({ error: mailErr.message });
+    }
+
+    const preAuthToken = await signToken(
+      { userId: userId.toString(), stage: "otp-pending" },
+      "10m"
+    );
 
     return res.status(201).json({
-      success: true,
-      token,
-      user: {
-        id: userId, name, email: normalizedEmail,
-        companyName: companyName || "", role: role || "",
-        yearsExperience: yearsExperience || "", businessType: businessType || "",
-        shippingMethod: shippingMethod || "", notificationPref: notificationPref || "",
-        newsletter: Boolean(newsletter),
-        isAdmin: false,
-      },
+      requireOTP: true,
+      preAuthToken,
+      email: normalizedEmail,
     });
   } catch (error) {
     console.error("REGISTER ERROR:", error);
@@ -87,7 +115,7 @@ export async function registerUser(req, res) {
   }
 }
 
-// ---------- LOGIN (OTP logic যোগ হয়েছে) ----------
+// ---------- LOGIN ----------
 export async function loginUser(req, res) {
   try {
     const { email, password } = req.body;
@@ -108,7 +136,6 @@ export async function loginUser(req, res) {
 
     const userId = user._id.toString();
 
-    // ---- device trust check ----
     const deviceId = req.cookies?.deviceId;
     const isTrustedDevice =
       deviceId &&
@@ -132,31 +159,18 @@ export async function loginUser(req, res) {
       });
     }
 
-    // ---- new/unknown device -> OTP পাঠাও ----
-    const otp = generateOTP();
-    const otpHash = await hashOTP(otp);
-
-    await db.collection("users").updateOne(
-      { _id: user._id },
-      {
-        $set: {
-          otp: {
-            hash: otpHash,
-            expiresAt: new Date(Date.now() + OTP_EXPIRY_MS),
-            attempts: 0,
-          },
-        },
-      }
-    );
-
-    await sendOTPEmail(user.email, otp, user.name);
+    try {
+      await createAndSendOtp(db, user._id, user.email, user.name);
+    } catch (mailErr) {
+      return res.status(500).json({ error: mailErr.message });
+    }
 
     const preAuthToken = await signToken({ userId, stage: "otp-pending" }, "10m");
 
     return res.json({
       requireOTP: true,
       preAuthToken,
-      email: user.email, // frontend এ "code sent to xxx@xx.com" দেখানোর জন্য
+      email: user.email,
     });
   } catch (error) {
     console.error("LOGIN ERROR:", error);
@@ -164,7 +178,7 @@ export async function loginUser(req, res) {
   }
 }
 
-// ---------- VERIFY OTP (নতুন) ----------
+// ---------- VERIFY OTP (login ও register দুটোর জন্যই কাজ করে) ----------
 export async function verifyOTP(req, res) {
   try {
     const { preAuthToken, otp } = req.body;
@@ -176,7 +190,7 @@ export async function verifyOTP(req, res) {
     try {
       payload = await verifyToken(preAuthToken);
     } catch {
-      return res.status(401).json({ error: "Session expired, please login again" });
+      return res.status(401).json({ error: "Session expired, please try again" });
     }
 
     if (payload.stage !== "otp-pending") {
@@ -187,13 +201,13 @@ export async function verifyOTP(req, res) {
     const user = await db.collection("users").findOne({ _id: new ObjectId(payload.userId) });
 
     if (!user?.otp) {
-      return res.status(400).json({ error: "No OTP request found, please login again" });
+      return res.status(400).json({ error: "No OTP request found, please try again" });
     }
     if (new Date(user.otp.expiresAt) < new Date()) {
-      return res.status(400).json({ error: "OTP expired, please login again" });
+      return res.status(400).json({ error: "OTP expired, please try again" });
     }
     if (user.otp.attempts >= 5) {
-      return res.status(429).json({ error: "Too many attempts, please login again" });
+      return res.status(429).json({ error: "Too many attempts, please try again" });
     }
 
     const isValid = await compareOTP(otp, user.otp.hash);
@@ -205,7 +219,6 @@ export async function verifyOTP(req, res) {
       return res.status(401).json({ error: "Invalid OTP" });
     }
 
-    // ✅ OTP ঠিক আছে -> device trusted করে দাও + real token issue করো
     const deviceId = crypto.randomUUID();
     const deviceExpiresAt = new Date(Date.now() + 60 * 60 * 24 * 30 * 1000);
 
@@ -240,7 +253,7 @@ export async function verifyOTP(req, res) {
   }
 }
 
-// ---------- RESEND OTP (নতুন) ----------
+// ---------- RESEND OTP ----------
 export async function resendOTP(req, res) {
   try {
     const { preAuthToken } = req.body;
@@ -252,26 +265,18 @@ export async function resendOTP(req, res) {
     try {
       payload = await verifyToken(preAuthToken);
     } catch {
-      return res.status(401).json({ error: "Session expired, please login again" });
+      return res.status(401).json({ error: "Session expired, please try again" });
     }
 
     const db = getDB();
     const user = await db.collection("users").findOne({ _id: new ObjectId(payload.userId) });
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const otp = generateOTP();
-    const otpHash = await hashOTP(otp);
-
-    await db.collection("users").updateOne(
-      { _id: user._id },
-      {
-        $set: {
-          otp: { hash: otpHash, expiresAt: new Date(Date.now() + OTP_EXPIRY_MS), attempts: 0 },
-        },
-      }
-    );
-
-    await sendOTPEmail(user.email, otp, user.name);
+    try {
+      await createAndSendOtp(db, user._id, user.email, user.name);
+    } catch (mailErr) {
+      return res.status(500).json({ error: mailErr.message });
+    }
 
     return res.json({ message: "OTP resent" });
   } catch (error) {
@@ -280,13 +285,13 @@ export async function resendOTP(req, res) {
   }
 }
 
-// ---------- LOGOUT (অপরিবর্তিত) ----------
+// ---------- LOGOUT ----------
 export function logoutUser(req, res) {
   res.clearCookie("token", { ...COOKIE_OPTIONS, maxAge: undefined });
   return res.json({ success: true });
 }
 
-// ---------- GET ME (অপরিবর্তিত) ----------
+// ---------- GET ME ----------
 export async function getMe(req, res) {
   const authHeader = req.headers.authorization;
   const token =
