@@ -1,14 +1,26 @@
 import nodemailer from "nodemailer";
 
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true, // true for port 465
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_APP_PASSWORD,
   },
-  connectionTimeout: 10000, // 10s এর মধ্যে connect না হলে fail
+  connectionTimeout: 10000,
   greetingTimeout: 10000,
   socketTimeout: 10000,
+});
+
+// Server চালু হওয়ার সাথে সাথেই SMTP connection টেস্ট করে,
+// আসল error টা সাথে সাথে Render logs-এ দেখাবে
+transporter.verify((error, success) => {
+  if (error) {
+    console.error("SMTP CONNECTION FAILED:", error.message);
+  } else {
+    console.log("SMTP server is ready to send emails");
+  }
 });
 
 export async function sendOTPEmail(toEmail, otp, userName = "") {
@@ -24,10 +36,17 @@ export async function sendOTPEmail(toEmail, otp, userName = "") {
     </div>
   `;
 
-  await transporter.sendMail({
-    from: `"INTASL" <${process.env.SMTP_USER}>`,
-    to: toEmail,
-    subject: `Your verification code: ${otp}`,
-    html,
-  });
+  try {
+    const info = await transporter.sendMail({
+      from: `"INTASL" <${process.env.SMTP_USER}>`,
+      to: toEmail,
+      subject: `Your verification code: ${otp}`,
+      html,
+    });
+    console.log("OTP email sent:", info.messageId);
+    return info;
+  } catch (err) {
+    console.error("sendMail failed:", err.message);
+    throw err;
+  }
 }
