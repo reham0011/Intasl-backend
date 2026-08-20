@@ -14,6 +14,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -25,7 +26,7 @@
     "nodemailer": "^9.0.5",
     "nodemon": "^3.1.14",
     "pdfkit": "^0.19.1",
-    "puppeteer": "^25.8.0",
+    "puppeteer-core": "^25.8.0",
     "resend": "^6.20.0",
     "socket.io": "^4.8.3"
   }

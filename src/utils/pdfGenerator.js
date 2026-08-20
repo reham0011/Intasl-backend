@@ -1,15 +1,14 @@
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-core";
+import chromium from "@sparticuz/chromium";
 
 export async function htmlToPdfBuffer(htmlContent) {
+  const executablePath = await chromium.executablePath();
+
   const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",   // critical fix — Render এর limited /dev/shm bypass করে
-      "--single-process",           // কম memory তে সাহায্য করে
-      "--no-zygote",
-    ],
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath,
+    headless: chromium.headless,
   });
 
   try {
