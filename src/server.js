@@ -32,7 +32,7 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json({ limit: "10mb" })); // increased limit — ID card photo (base64) needs more than default 100kb
+app.use(express.json({ limit: "20mb" })); // increased limit — ID card PDF (base64) needs more than default 100kb
 app.use(cookieParser());
 
 app.get("/", (req, res) => {

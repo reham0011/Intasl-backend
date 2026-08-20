@@ -1,55 +1,30 @@
-import { generateIdCardHTML } from "../templates/idCardTemplate.js";
-import { htmlToPdfBuffer } from "../utils/pdfGenerator.js";
-import { sendMail } from "../utils/mailer.js"; // আপনার existing mailer.js
-
-// POST /api/id-cards/generate
-// Body: { name, designation, fathersName, nationalId, bloodGroup, photoBase64 }
-// Returns the PDF as a downloadable file
-export async function generateIdCardPDF(req, res) {
-  try {
-    const data = req.body;
-
-    if (!data.name || !data.nationalId) {
-      return res.status(400).json({ error: "Name and National ID are required" });
-    }
-
-    const html = generateIdCardHTML(data);
-    const pdfBuffer = await htmlToPdfBuffer(html);
-
-    res.set({
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="id-card-${data.name.replace(/\s+/g, "-")}.pdf"`,
-    });
-    return res.send(pdfBuffer);
-  } catch (err) {
-    console.error("ID CARD PDF ERROR:", err);
-    return res.status(500).json({ error: "Failed to generate ID card" });
-  }
-}
+import { sendMail } from "../utils/mailer.js";
 
 // POST /api/id-cards/email
-// Body: { name, designation, fathersName, nationalId, bloodGroup, photoBase64, recipientEmail }
-export async function emailIdCard(req, res) {
+// Body: { pdfBase64, recipientEmail, employeeName, filename }
+// The PDF is generated entirely on the frontend (html2canvas + jsPDF).
+// This endpoint's only job is to attach it and send it via Resend —
+// no Puppeteer, no Chrome, no server-side rendering at all anymore.
+export async function emailIdCardPdf(req, res) {
   try {
-    const data = req.body;
+    const { pdfBase64, recipientEmail, employeeName, filename } = req.body;
 
-    if (!data.recipientEmail) {
+    if (!pdfBase64) {
+      return res.status(400).json({ error: "PDF data is required" });
+    }
+    if (!recipientEmail) {
       return res.status(400).json({ error: "Recipient email is required" });
     }
-    if (!data.name || !data.nationalId) {
-      return res.status(400).json({ error: "Name and National ID are required" });
-    }
 
-    const html = generateIdCardHTML(data);
-    const pdfBuffer = await htmlToPdfBuffer(html);
+    const pdfBuffer = Buffer.from(pdfBase64, "base64");
 
     await sendMail({
-      to: data.recipientEmail,
-      subject: `Your ID Card - ${data.name}`,
-      text: `Hi ${data.name},\n\nPlease find your ID card attached.\n\nRegards,\nFnF Online`,
+      to: recipientEmail,
+      subject: `Your ID Card${employeeName ? ` - ${employeeName}` : ""}`,
+      text: `Hi ${employeeName || ""},\n\nPlease find your ID card attached.\n\nRegards`,
       attachments: [
         {
-          filename: `id-card-${data.name.replace(/\s+/g, "-")}.pdf`,
+          filename: filename || "id-card.pdf",
           content: pdfBuffer,
         },
       ],
@@ -58,6 +33,6 @@ export async function emailIdCard(req, res) {
     return res.json({ success: true, message: "ID card emailed successfully" });
   } catch (err) {
     console.error("EMAIL ID CARD ERROR:", err);
-    return res.status(500).json({ error: "Failed to email ID card" });
+    return res.status(500).json({ error: err.message || "Failed to email ID card" });
   }
 }
