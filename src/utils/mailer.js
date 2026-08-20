@@ -38,15 +38,26 @@ export async function sendOTPEmail(toEmail, otp, userName = "") {
 
 // Generic mail sender — supports attachments (used by ID card emailing,
 // and any future feature that needs to send a file over email).
-// attachments: [{ filename: string, content: Buffer }]
+// attachments: [{ filename: string, content: Buffer | Uint8Array | base64 string }]
 export async function sendMail({ to, subject, text, html, attachments = [] }) {
   try {
-    // Resend expects attachment content as base64 string or Buffer.
-    // We normalize Buffers to base64 here so callers can just pass raw Buffers.
-    const formattedAttachments = attachments.map((att) => ({
-      filename: att.filename,
-      content: Buffer.isBuffer(att.content) ? att.content.toString("base64") : att.content,
-    }));
+    const formattedAttachments = attachments.map((att) => {
+      let content = att.content;
+
+      // Puppeteer's page.pdf() returns a Uint8Array (not a Node Buffer) in
+      // newer versions, so we normalize anything buffer-like to base64.
+      if (Buffer.isBuffer(content)) {
+        content = content.toString("base64");
+      } else if (content instanceof Uint8Array) {
+        content = Buffer.from(content).toString("base64");
+      }
+      // if it's already a base64 string, leave it as-is
+
+      return {
+        filename: att.filename,
+        content,
+      };
+    });
 
     const { data, error } = await resend.emails.send({
       from: "INTASL <onboarding@resend.dev>",
