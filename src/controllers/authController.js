@@ -1,6 +1,5 @@
 import bcrypt from "bcryptjs";
 import { ObjectId } from "mongodb";
-import crypto from "crypto";
 import { getDB } from "../config/db.js";
 import { signToken, verifyToken } from "../utils/jwt.js";
 

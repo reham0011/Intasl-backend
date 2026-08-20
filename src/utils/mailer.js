@@ -35,3 +35,37 @@ export async function sendOTPEmail(toEmail, otp, userName = "") {
     throw err;
   }
 }
+
+// Generic mail sender — supports attachments (used by ID card emailing,
+// and any future feature that needs to send a file over email).
+// attachments: [{ filename: string, content: Buffer }]
+export async function sendMail({ to, subject, text, html, attachments = [] }) {
+  try {
+    // Resend expects attachment content as base64 string or Buffer.
+    // We normalize Buffers to base64 here so callers can just pass raw Buffers.
+    const formattedAttachments = attachments.map((att) => ({
+      filename: att.filename,
+      content: Buffer.isBuffer(att.content) ? att.content.toString("base64") : att.content,
+    }));
+
+    const { data, error } = await resend.emails.send({
+      from: "INTASL <onboarding@resend.dev>",
+      to,
+      subject,
+      html: html || `<p>${text || ""}</p>`,
+      text,
+      attachments: formattedAttachments.length > 0 ? formattedAttachments : undefined,
+    });
+
+    if (error) {
+      console.error("sendMail failed:", error.message || error);
+      throw new Error(error.message || "Failed to send email");
+    }
+
+    console.log("Email sent:", data.id);
+    return data;
+  } catch (err) {
+    console.error("sendMail failed:", err.message);
+    throw err;
+  }
+}
