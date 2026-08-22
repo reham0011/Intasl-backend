@@ -484,3 +484,68 @@ export async function downloadInvoice(req, res) {
     res.status(500).json({ error: "Failed to generate invoice" });
   }
 }
+export async function getBookingAnalytics(req, res) {
+  try {
+    const db = getDB();
+    const col = db.collection("bookings");
+
+    const [statusAgg, containerTypeAgg, containerSizeAgg, monthlyAgg, totalBookings] =
+      await Promise.all([
+        col.aggregate([
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ]).toArray(),
+
+        col.aggregate([
+          { $group: { _id: "$containerType", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]).toArray(),
+
+        col.aggregate([
+          { $group: { _id: "$containerSize", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]).toArray(),
+
+        col.aggregate([
+          {
+            $group: {
+              _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+              total: { $sum: 1 },
+              accepted: { $sum: { $cond: [{ $eq: ["$status", "accepted"] }, 1, 0] } },
+              rejected: { $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] } },
+              pending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
+            },
+          },
+          { $sort: { "_id.year": 1, "_id.month": 1 } },
+          { $limit: 12 },
+        ]).toArray(),
+
+        col.countDocuments(),
+      ]);
+
+    const statusCounts = { pending: 0, accepted: 0, rejected: 0 };
+    statusAgg.forEach((s) => {
+      if (s._id in statusCounts) statusCounts[s._id] = s.count;
+    });
+
+    const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+    const monthlyTrend = monthlyAgg.map((m) => ({
+      month: `${monthNames[m._id.month - 1]} ${m._id.year}`,
+      total: m.total,
+      accepted: m.accepted,
+      rejected: m.rejected,
+      pending: m.pending,
+    }));
+
+    return res.json({
+      totalBookings,
+      statusCounts,
+      containerTypeCounts: containerTypeAgg.map((c) => ({ type: c._id || "Unknown", count: c.count })),
+      containerSizeCounts: containerSizeAgg.map((c) => ({ size: c._id || "Unknown", count: c.count })),
+      monthlyTrend,
+    });
+  } catch (err) {
+    console.error("GET BOOKING ANALYTICS ERROR:", err);
+    return res.status(500).json({ error: "Server Error" });
+  }
+}

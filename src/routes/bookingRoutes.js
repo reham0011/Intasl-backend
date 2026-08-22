@@ -2,7 +2,7 @@ import express from "express";
 import {
   createBooking, getMyBookings, getAllBookings,
   updateBookingStatus, updateBooking, deleteBooking,
-  downloadInvoice,
+  downloadInvoice, getBookingAnalytics,
 } from "../controllers/bookingController.js";
 import { requireAuth, requireAdmin } from "../middleware/authMiddleware.js";
 
@@ -10,6 +10,7 @@ const router = express.Router();
 
 router.post("/", requireAuth, createBooking);
 router.get("/me", requireAuth, getMyBookings);
+router.get("/analytics", requireAdmin, getBookingAnalytics);
 router.get("/:id/invoice", requireAuth, downloadInvoice);
 router.get("/", requireAdmin, getAllBookings);
 router.patch("/:id/status", requireAdmin, updateBookingStatus);
