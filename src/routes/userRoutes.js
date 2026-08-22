@@ -10,8 +10,8 @@ import { ROLES } from "../models/user.js";
 
 const router = express.Router();
 
-// Viewing the user list requires at least moderator access
-router.get("/", requireMinimumRole(ROLES.MODERATOR), getAllUsers);
+// Viewing the user list now requires at least admin access (moderators are blocked)
+router.get("/", requireMinimumRole(ROLES.ADMIN), getAllUsers);
 
 // Changing roles requires at least admin access
 // (the controller itself further restricts admin-vs-super_admin actions)
