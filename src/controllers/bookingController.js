@@ -4,6 +4,16 @@ import { getDB } from "../config/db.js";
 import { createNotification } from "./notificationController.js";
 import { emitToUser } from "../utils/socket.js";
 
+const TRACKING_STAGES = ["booked", "picked_up", "in_transit", "port_arrived", "delivered"];
+
+const TRACKING_LABELS = {
+  booked: "Booking Confirmed",
+  picked_up: "Container Picked Up",
+  in_transit: "In Transit",
+  port_arrived: "Arrived at Port",
+  delivered: "Delivered",
+};
+
 export async function createBooking(req, res) {
   try {
     const {
@@ -92,6 +102,14 @@ export async function createBooking(req, res) {
       weight: weight || grossWeight || "",
 
       status: "pending",
+      trackingHistory: [
+        {
+          stage: "booked",
+          location: placeOfReceipt || "N/A",
+          note: "Booking request submitted",
+          timestamp: new Date(),
+        },
+      ],
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -251,6 +269,129 @@ export async function deleteBooking(req, res) {
     return res.json({ success: true });
   } catch (err) {
     console.error("DELETE BOOKING ERROR:", err);
+    return res.status(500).json({ error: "Server Error" });
+  }
+}
+
+// 🆕 Update container tracking (admin adds a new stage/location event)
+export async function updateBookingTracking(req, res) {
+  try {
+    const { id } = req.params;
+    const { stage, location, note } = req.body;
+
+    if (!TRACKING_STAGES.includes(stage)) {
+      return res.status(400).json({ error: "Invalid tracking stage" });
+    }
+    if (!location || !location.trim()) {
+      return res.status(400).json({ error: "Location is required" });
+    }
+
+    const db = getDB();
+    const booking = await db.collection("bookings").findOne({ _id: new ObjectId(id) });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+
+    const event = {
+      stage,
+      location: location.trim(),
+      note: note?.trim() || "",
+      timestamp: new Date(),
+    };
+
+    await db.collection("bookings").updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $push: { trackingHistory: event },
+        $set: { updatedAt: new Date() },
+      }
+    );
+
+    const message = `${TRACKING_LABELS[stage]} — ${location.trim()}`;
+
+    await createNotification({
+      recipientId: booking.userId,
+      type: "tracking_update",
+      message,
+      bookingId: id,
+    });
+
+    emitToUser(booking.userId, "notification", {
+      type: "tracking_update",
+      message,
+      bookingId: id,
+      read: false,
+      createdAt: new Date(),
+    });
+
+    return res.json({ success: true, event });
+  } catch (err) {
+    console.error("UPDATE TRACKING ERROR:", err);
+    return res.status(500).json({ error: "Server Error" });
+  }
+}
+
+// 🆕 Booking Analytics
+export async function getBookingAnalytics(req, res) {
+  try {
+    const db = getDB();
+    const col = db.collection("bookings");
+
+    const [statusAgg, containerTypeAgg, containerSizeAgg, monthlyAgg, totalBookings] =
+      await Promise.all([
+        col.aggregate([
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+        ]).toArray(),
+
+        col.aggregate([
+          { $group: { _id: "$containerType", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]).toArray(),
+
+        col.aggregate([
+          { $group: { _id: "$containerSize", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ]).toArray(),
+
+        col.aggregate([
+          {
+            $group: {
+              _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+              total: { $sum: 1 },
+              accepted: { $sum: { $cond: [{ $eq: ["$status", "accepted"] }, 1, 0] } },
+              rejected: { $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] } },
+              pending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
+            },
+          },
+          { $sort: { "_id.year": 1, "_id.month": 1 } },
+          { $limit: 12 },
+        ]).toArray(),
+
+        col.countDocuments(),
+      ]);
+
+    const statusCounts = { pending: 0, accepted: 0, rejected: 0 };
+    statusAgg.forEach((s) => {
+      if (s._id in statusCounts) statusCounts[s._id] = s.count;
+    });
+
+    const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+    const monthlyTrend = monthlyAgg.map((m) => ({
+      month: `${monthNames[m._id.month - 1]} ${m._id.year}`,
+      total: m.total,
+      accepted: m.accepted,
+      rejected: m.rejected,
+      pending: m.pending,
+    }));
+
+    return res.json({
+      totalBookings,
+      statusCounts,
+      containerTypeCounts: containerTypeAgg.map((c) => ({ type: c._id || "Unknown", count: c.count })),
+      containerSizeCounts: containerSizeAgg.map((c) => ({ size: c._id || "Unknown", count: c.count })),
+      monthlyTrend,
+    });
+  } catch (err) {
+    console.error("GET BOOKING ANALYTICS ERROR:", err);
     return res.status(500).json({ error: "Server Error" });
   }
 }
@@ -482,70 +623,5 @@ export async function downloadInvoice(req, res) {
   } catch (err) {
     console.error("INVOICE ERROR:", err);
     res.status(500).json({ error: "Failed to generate invoice" });
-  }
-}
-export async function getBookingAnalytics(req, res) {
-  try {
-    const db = getDB();
-    const col = db.collection("bookings");
-
-    const [statusAgg, containerTypeAgg, containerSizeAgg, monthlyAgg, totalBookings] =
-      await Promise.all([
-        col.aggregate([
-          { $group: { _id: "$status", count: { $sum: 1 } } },
-        ]).toArray(),
-
-        col.aggregate([
-          { $group: { _id: "$containerType", count: { $sum: 1 } } },
-          { $sort: { count: -1 } },
-        ]).toArray(),
-
-        col.aggregate([
-          { $group: { _id: "$containerSize", count: { $sum: 1 } } },
-          { $sort: { count: -1 } },
-        ]).toArray(),
-
-        col.aggregate([
-          {
-            $group: {
-              _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
-              total: { $sum: 1 },
-              accepted: { $sum: { $cond: [{ $eq: ["$status", "accepted"] }, 1, 0] } },
-              rejected: { $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] } },
-              pending: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
-            },
-          },
-          { $sort: { "_id.year": 1, "_id.month": 1 } },
-          { $limit: 12 },
-        ]).toArray(),
-
-        col.countDocuments(),
-      ]);
-
-    const statusCounts = { pending: 0, accepted: 0, rejected: 0 };
-    statusAgg.forEach((s) => {
-      if (s._id in statusCounts) statusCounts[s._id] = s.count;
-    });
-
-    const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
-    const monthlyTrend = monthlyAgg.map((m) => ({
-      month: `${monthNames[m._id.month - 1]} ${m._id.year}`,
-      total: m.total,
-      accepted: m.accepted,
-      rejected: m.rejected,
-      pending: m.pending,
-    }));
-
-    return res.json({
-      totalBookings,
-      statusCounts,
-      containerTypeCounts: containerTypeAgg.map((c) => ({ type: c._id || "Unknown", count: c.count })),
-      containerSizeCounts: containerSizeAgg.map((c) => ({ size: c._id || "Unknown", count: c.count })),
-      monthlyTrend,
-    });
-  } catch (err) {
-    console.error("GET BOOKING ANALYTICS ERROR:", err);
-    return res.status(500).json({ error: "Server Error" });
   }
 }
