@@ -18,4 +18,4 @@ router.patch("/:id/status", requireAdmin, updateBookingStatus);
 router.patch("/:id", requireAdmin, updateBooking);
 router.delete("/:id", requireAdmin, deleteBooking);
 
-export default router;
+export default router; 
